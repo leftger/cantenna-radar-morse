@@ -1,21 +1,16 @@
-
 // CONNECTIONS:
 // DS3231 SDA --> SDA
 // DS3231 SCL --> SCL
 // DS3231 VCC --> 3.3v or 5v
 // DS3231 GND --> GND
+// SQW --->  (Pin19) Don't forget to pullup (4.7k to 10k to VCC)
 
-#if defined(ESP8266)
-#include <pgmspace.h>
-#else
-#include <avr/pgmspace.h>
-#endif
 #include <Wire.h>  // must be incuded here so that Arduino library object file references work
 #include <RtcDS3231.h>
 #include <morse.h>
 
 #define PIN_STATUS  13
-#define PIN_SPEAKER 3
+#define PIN_SPEAKER 6
 
 LEDMorseSender radarMorseSender(PIN_STATUS,
                                 20.5);  // wpm
@@ -33,7 +28,7 @@ RtcDS3231 Rtc;
 //
 // CAUTION:  The interrupts are Arduino numbers NOT Atmel numbers
 //   and may not match (example, Mega2560 int.4 is actually Atmel Int2)
-//   this is only an issue if you plan to use the lower level interupt features
+//   this is only an issue if you plan to use the lower level interrupt features
 //
 // Board           int.0    int.1   int.2   int.3   int.4   int.5
 // ---------------------------------------------------------------
@@ -46,23 +41,23 @@ RtcDS3231 Rtc;
 
 // marked volatile so interrupt can safely modify them and
 // other code can safely read and modify them
-volatile uint16_t interuptCount = 0;
-volatile bool interuptFlag = false;
+volatile uint16_t interruptCount = 0;
+volatile bool interruptFlag = false;
 
-void InteruptServiceRoutine()
+void interruptServiceRoutine()
 {
-  // since this interupted any other running code,
+  // since this interrupted any other running code,
   // don't do anything that takes long and especially avoid
   // any communications calls within this routine
-  interuptCount++;
-  interuptFlag = true;
+  interruptCount++;
+  interruptFlag = true;
 }
 
 void setup ()
 {
   Serial.begin(57600);
 
-  // set the interupt pin to input mode
+  // set the interrupt pin to input mode
   pinMode(RtcSquareWavePin, INPUT);
 
   //--------RTC SETUP ------------
@@ -93,18 +88,7 @@ void setup ()
   }
 
   Rtc.Enable32kHzPin(false);
-  Rtc.SetSquareWavePin(DS3231SquareWavePin_ModeAlarmBoth);
-
-  // Alarm 1 set to trigger every day when
-  // the hours, minutes, and seconds match
-  RtcDateTime alarmTime = now + 88; // into the future
-  DS3231AlarmOne alarm1(
-    alarmTime.Day(),
-    alarmTime.Hour(),
-    alarmTime.Minute(),
-    alarmTime.Second(),
-    DS3231AlarmOneControl_HoursMinutesSecondsMatch);
-  Rtc.SetAlarmOne(alarm1);
+  Rtc.SetSquareWavePin(DS3231SquareWavePin_ModeAlarmTwo);
 
   // Alarm 2 set to trigger at the top of the minute
   DS3231AlarmTwo alarm2(
@@ -117,8 +101,8 @@ void setup ()
   // throw away any old alarm state before we ran
   Rtc.LatchAlarmsTriggeredFlags();
 
-  // setup external interupt
-  attachInterrupt(RtcSquareWaveInterrupt, InteruptServiceRoutine, FALLING);
+  // setup external interrupt
+  attachInterrupt(RtcSquareWaveInterrupt, interruptServiceRoutine, FALLING);
 
   radarMorseSender.setup();
   radarMorseSender.setMessage(String(PROSIGN_KN) + String(" "));
@@ -133,31 +117,54 @@ void setup ()
 
 void loop ()
 {
-  if (!radarMorseSender.continueSending())
-  {
-    radarMorseSender.startSending();
-  }
-
-  if (!speakerSender.continueSending())
-  {
-    speakerSender.startSending();
-  }
   if (!Rtc.IsDateTimeValid())
   {
-    // Common Cuases:
-    //    1) the battery on the device is low or even missing and the power line was disconnected
     Serial.println("RTC lost confidence in the DateTime!");
   }
 
-  RtcDateTime now = Rtc.GetDateTime();
-  printDateTime(now);
-  Serial.println();
+  
+  if (Alarmed())
+  {
+    if(interruptCount % 10 == 0){
+      radarMorseSender.sendBlocking();
+      radarMorseSender.sendBlocking();
+      radarMorseSender.sendBlocking();
+    }
+    Serial.print(">>Interrupt Count: ");
+    Serial.print(interruptCount);
+    Serial.println("<<");
+    RtcDateTime now = Rtc.GetDateTime();
+    printDateTime(now);
+    Serial.println();
 
-  RtcTemperature temp = Rtc.GetTemperature();
-  Serial.print(temp.AsFloat());
-  Serial.println("C");
+    RtcTemperature temp = Rtc.GetTemperature();
+    Serial.print(temp.AsFloat());
+    Serial.println("C");
+  }
+}
 
-  delay(10000); // ten seconds
+bool Alarmed()
+{
+  bool wasAlarmed = false;
+  if (interruptFlag)  // check our flag that gets sets in the interrupt
+  {
+    wasAlarmed = true;
+    interruptFlag = false; // reset the flag
+
+    // this gives us which alarms triggered and
+    // then allows for others to trigger again
+    DS3231AlarmFlag flag = Rtc.LatchAlarmsTriggeredFlags();
+
+    if (flag & DS3231AlarmFlag_Alarm1)
+    {
+      Serial.println("alarm one triggered");
+    }
+    if (flag & DS3231AlarmFlag_Alarm2)
+    {
+      Serial.println("alarm two triggered");
+    }
+  }
+  return wasAlarmed;
 }
 
 #define countof(a) (sizeof(a) / sizeof(a[0]))
